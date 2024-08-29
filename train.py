@@ -46,7 +46,7 @@ def main():
 
     # Define input and output paths
     input_root = "./train-input"
-    output_root = "./weights"
+    output_root = "./embeddings"
 
     # Ensure output directory exists
     os.makedirs(output_root, exist_ok=True)
