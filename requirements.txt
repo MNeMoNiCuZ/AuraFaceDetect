@@ -1,0 +1,4 @@
+huggingface_hub
+insightface
+onnxruntime
+convert
