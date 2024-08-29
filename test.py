@@ -88,7 +88,7 @@ def main():
         print(f"{idx}. {file_name}")
 
     # User input for model selection
-    selected = input("Enter the model numbers to compare against (comma separated), or 0 for all models: ").strip()
+    selected = input("Enter the model numbers to compare against (comma separated), or press ENTER for all models: ").strip() or "0"
 
     if selected == "0":
         selected_models = None  # Compare against all models
