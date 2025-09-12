@@ -172,7 +172,11 @@ def main(args):
                 if identified_character:
                     similarity_percent = max_similarity * 100
                     snap_folder_start = int(similarity_percent / snap_percentage) * snap_percentage
-                    folder_name = str(snap_folder_start)
+                    if snap_percentage == 1:
+                        folder_name = str(snap_folder_start)
+                    else:
+                        snap_folder_end = snap_folder_start + snap_percentage - 1
+                        folder_name = f"{snap_folder_start}-{snap_folder_end}"
                     
                     target_dir = os.path.join(args.output_root, folder_name)
                     if not os.path.exists(target_dir):
