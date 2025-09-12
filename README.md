@@ -28,6 +28,14 @@ Run `py test.py` from the (venv), to compare each image in `/test-input/` agains
 
 You will be asked which embedding to compare the images against.
 
-Press ENTER or 0 to compare against all, or choose the embedding with numbers as instructed.
+Press ENTER to choose the default one, or 0 to compare against all, or choose the embedding with numbers as instructed.
 
-![image](https://github.com/user-attachments/assets/9f8e2016-0728-443e-b3c5-861e5151fc8f)
+You will then be asked which action to perform:
+
+1. Print results to console
+2. Sort images into folders by similarity
+
+If you choose #2, you are then asked the snap % for the sorting. Use this to create ranges (sort by every 5% of similarity) for example.
+
+<img width="1400" height="980" alt="image" src="https://github.com/user-attachments/assets/4b065579-d0d6-4b29-86d2-e7aeae7d1d20" />
+
