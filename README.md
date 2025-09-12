@@ -36,3 +36,6 @@ You will then be asked which action to perform:
 2. Sort images into folders by similarity
 
 If you choose #2, you are then asked the snap % for the sorting. Use this to create ranges (sort by every 5% of similarity) for example.
+
+<img width="1400" height="980" alt="image" src="https://github.com/user-attachments/assets/4b065579-d0d6-4b29-86d2-e7aeae7d1d20" />
+
