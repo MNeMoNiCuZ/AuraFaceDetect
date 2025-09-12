@@ -7,6 +7,9 @@ from huggingface_hub import snapshot_download
 from insightface.app import FaceAnalysis
 import shutil
 import argparse
+import concurrent.futures
+import threading
+from tqdm import tqdm
 
 # --- Configuration ---
 REPO_ID = "fal/AuraFace-v1"
@@ -19,6 +22,8 @@ DEFAULT_SNAP_PERCENTAGE = 1
 DEFAULT_MODEL_SELECTION = "1"
 DEFAULT_ACTION = "2"  # 1 for Print, 2 for Sort
 SORT_ACTION = "copy" # 'move' or 'copy'
+DEFAULT_MULTITHREAD = "True"
+DEFAULT_NUM_THREADS = 4
 # ---------------------
 
 def cosine_similarity(embedding1, embedding2):
@@ -46,7 +51,7 @@ def load_embeddings(weights_root):
     
     return embedding_db, embedding_files
 
-def identify_character(image_path, face_app, embedding_db, selected_models=None):
+def identify_character(image_path, face_app, embedding_db, selected_models=None, lock=None, quiet=False):
     input_image = cv2.imread(image_path)
     if input_image is None:
         raise ValueError(f"Failed to load image from path: {image_path}")
@@ -55,7 +60,12 @@ def identify_character(image_path, face_app, embedding_db, selected_models=None)
     cv2_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
 
     # Get the face embeddings
-    faces = face_app.get(cv2_image)
+    if lock:
+        with lock:
+            faces = face_app.get(cv2_image)
+    else:
+        faces = face_app.get(cv2_image)
+        
     if not faces:
         raise ValueError("No faces detected in the image.")
 
@@ -77,12 +87,51 @@ def identify_character(image_path, face_app, embedding_db, selected_models=None)
                 max_similarity = similarity
                 identified_character = character_name
 
-    # Print all comparisons
-    print("\nComparisons:")
-    for character_name, similarity in results:
-        print(f"{character_name}: {similarity}")
+    if not quiet:
+        # Print all comparisons
+        print("\nComparisons:")
+        for character_name, similarity in results:
+            print(f"{character_name}: {similarity}")
 
     return identified_character, max_similarity
+
+def process_image(test_image_path, face_app, embedding_db, selected_models, action_choice, snap_percentage, output_root, sort_action, lock):
+    test_image_name = os.path.basename(test_image_path)
+    if action_choice == '1':
+        print(f"Processing {test_image_name}...")
+
+    try:
+        quiet_mode = action_choice == '2'
+        identified_character, max_similarity = identify_character(test_image_path, face_app, embedding_db, selected_models, lock, quiet=quiet_mode)
+
+        if action_choice == '2': # Corresponds to "Sort"
+            if identified_character:
+                similarity_percent = max_similarity * 100
+                snap_folder_start = int(similarity_percent / snap_percentage) * snap_percentage
+                if snap_percentage == 1:
+                    folder_name = str(snap_folder_start)
+                else:
+                    snap_folder_end = snap_folder_start + snap_percentage - 1
+                    folder_name = f"{snap_folder_start}-{snap_folder_end}"
+                
+                target_dir = os.path.join(output_root, folder_name)
+                if not os.path.exists(target_dir):
+                    os.makedirs(target_dir)
+                
+                new_image_path = os.path.join(target_dir, test_image_name)
+                if sort_action == 'copy':
+                    shutil.copy(test_image_path, new_image_path)
+                else: # default to move
+                    shutil.move(test_image_path, new_image_path)
+        else: # Default to printing
+            if identified_character:
+                print(f"-> Best match for {test_image_name}: {identified_character} with similarity {max_similarity:.2%}.")
+            else:
+                print(f"-> No match found for {test_image_name}.")
+
+    except ValueError as e:
+        if action_choice == '1':
+            print(f"Error processing {test_image_name}: {e}")
 
 def main(args):
     # Download the model files if not already present
@@ -137,18 +186,25 @@ def main(args):
     # --- Action Selection ---
     action_choice = args.action
     if action_choice is None: # If no CLI arg, go interactive
-        print("\n--- Choose Action ---")
-        print("1. Print results to console")
-        print("2. Sort images into folders by similarity")
+        print("\n\n--- Choose Action ---")
+        print("="*70)
+        print(f"{'1.':<10}Print results to console")
+        print(f"{'2.':<10}Sort images into folders by similarity")
+        print("="*70)
         action_choice = input(f"Select an action (press ENTER for default: {DEFAULT_ACTION}): ").strip() or DEFAULT_ACTION
 
     snap_percentage = args.snap_percentage
     if action_choice == '2':
         if args.action is None: # action was chosen interactively
-            print("\n--- Configure Sorting ---")
-            snap_input = input(f"Enter the % 'snap' for sorting (1, 5, or 10, default is {DEFAULT_SNAP_PERCENTAGE}): ").strip()
-            if snap_input in ('1', '5', '10'):
-                snap_percentage = int(snap_input)
+            print("\n\n--- Configure Sorting ---")
+            print("="*70)
+            snap_input = input(f"Enter the % 'snap' for sorting (default is {DEFAULT_SNAP_PERCENTAGE}): ").strip()
+            print("="*70)
+            if snap_input:
+                try:
+                    snap_percentage = int(snap_input)
+                except ValueError:
+                    print(f"Invalid input for snap percentage: {snap_input}. Using default {DEFAULT_SNAP_PERCENTAGE}%")
         
         sorted_output_root = args.output_root
         if not os.path.exists(sorted_output_root):
@@ -160,56 +216,37 @@ def main(args):
     # Get a list of files to process to avoid issues with modifying the directory while iterating
     image_files_to_process = [f for f in os.listdir(inference_root) if not os.path.isdir(os.path.join(inference_root, f)) and f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-    for test_image_name in image_files_to_process:
-        test_image_path = os.path.join(inference_root, test_image_name)
-        
-        print(f"\nProcessing {test_image_name}...")
+    if args.multithread.lower() == 'true':
+        lock = threading.Lock()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.num_threads) as executor:
+            futures = [executor.submit(process_image, os.path.join(inference_root, name), face_app, embedding_db, selected_models, action_choice, snap_percentage, args.output_root, args.sort_action, lock) for name in image_files_to_process]
+            if action_choice == '2':
+                for future in tqdm(concurrent.futures.as_completed(futures), total=len(image_files_to_process), desc="Sorting Images"):
+                    pass
+            else:
+                concurrent.futures.wait(futures)
 
-        try:
-            identified_character, max_similarity = identify_character(test_image_path, face_app, embedding_db, selected_models)
+    else:
+        iterable = image_files_to_process
+        if action_choice == '2':
+            iterable = tqdm(image_files_to_process, desc="Sorting Images")
+        for test_image_name in iterable:
+            test_image_path = os.path.join(inference_root, test_image_name)
+            process_image(test_image_path, face_app, embedding_db, selected_models, action_choice, snap_percentage, args.output_root, args.sort_action, None)
 
-            if action_choice == '2': # Corresponds to "Sort"
-                if identified_character:
-                    similarity_percent = max_similarity * 100
-                    snap_folder_start = int(similarity_percent / snap_percentage) * snap_percentage
-                    if snap_percentage == 1:
-                        folder_name = str(snap_folder_start)
-                    else:
-                        snap_folder_end = snap_folder_start + snap_percentage - 1
-                        folder_name = f"{snap_folder_start}-{snap_folder_end}"
-                    
-                    target_dir = os.path.join(args.output_root, folder_name)
-                    if not os.path.exists(target_dir):
-                        os.makedirs(target_dir)
-                    
-                    new_image_path = os.path.join(target_dir, test_image_name)
-                    if args.sort_action == 'copy':
-                        shutil.copy(test_image_path, new_image_path)
-                        print(f"-> Copied '{test_image_name}' to '{target_dir}' with similarity {max_similarity:.2%}")
-                    else: # default to move
-                        shutil.move(test_image_path, new_image_path)
-                        print(f"-> Moved '{test_image_name}' to '{target_dir}' with similarity {max_similarity:.2%}")
-                else:
-                    print("-> No match found, image not moved.")
-            else: # Default to printing
-                if identified_character:
-                    print(f"-> Best match: {identified_character} with similarity {max_similarity:.2%}.")
-                else:
-                    print("-> No match found.")
-
-        except ValueError as e:
-            print(e)
     print("\n--- Processing Complete ---")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Identify faces in images and sort them.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--model_selection', type=str, default=None, help='Model numbers to use, comma-separated (e.g., "1,2") or "ALL". If not provided, runs in interactive mode.')
     parser.add_argument('--action', type=str, default=None, choices=['1', '2'], help='Action to perform: 1 for Print, 2 for Sort. If not provided, runs in interactive mode.')
-    parser.add_argument('--snap_percentage', type=int, default=DEFAULT_SNAP_PERCENTAGE, choices=[1, 5, 10], help='Snap percentage for sorting.')
+    parser.add_argument('--snap_percentage', type=int, default=DEFAULT_SNAP_PERCENTAGE, help='Snap percentage for sorting.')
     parser.add_argument('--sort_action', type=str, default=SORT_ACTION, choices=['move', 'copy'], help="Action for sorting files: 'move' or 'copy'.")
     parser.add_argument('--inference_root', type=str, default=INFERENCE_ROOT, help='Directory with images to process.')
     parser.add_argument('--weights_root', type=str, default=WEIGHTS_ROOT, help='Directory with embedding files.')
     parser.add_argument('--output_root', type=str, default=OUTPUT_ROOT, help='Directory for sorted output.')
+    parser.add_argument('--multithread', type=str, default=DEFAULT_MULTITHREAD, help='Enable or disable multithreading.')
+    parser.add_argument('--num_threads', type=int, default=DEFAULT_NUM_THREADS, help='Number of threads to use.')
     
     args = parser.parse_args()
     main(args)
